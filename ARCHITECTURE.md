@@ -17,15 +17,15 @@ A Model Context Protocol (MCP) server creates a bridge between Cascade (the AI a
 - A server that can list and manage AWS CodePipeline resources
 - Functionality to view pipeline states, executions, and details
 - Capability to trigger pipeline executions, approvals, and other operations
-- Proper authentication and error handling mechanisms
+- AWS authentication via profile/SSO, IAM roles, or optional static keys (see `src/aws/create-aws-config.ts`)
 
 ### Key Technologies
-- **TypeScript**: Used for type-safe development (don't worry if you're new to it!)
-- **Node.js**: Runtime environment for JavaScript
-- **Express**: Simple HTTP server framework
-- **AWS SDK**: Library to interact with AWS services
-- **Model Context Protocol SDK**: Framework for MCP implementation
-- **ES Modules**: Modern JavaScript module system
+- **TypeScript**: Type-safe development
+- **Node.js**: Runtime
+- **AWS SDK v2**: CodePipeline and CloudWatch APIs
+- **Model Context Protocol SDK**: Stdio transport for IDE integration
+- **ES Modules**: `import` / `export` with `.js` extensions in imports
+- **Express** (optional): Only used by the legacy `src/mcp-server.ts` HTTP experiment
 
 ### Visual Overview
 
@@ -85,38 +85,50 @@ User → Windsurf → Cascade → MCP Server → AWS CodePipeline
 
 ### Folder Structure Overview
 
-Create this folder structure step by step:
+Actual layout of this repository:
 
 ```
-my-mcp-server/
+mcp-codepipeline-server/
 ├── src/
-│   ├── config/                  # Server configuration
-│   ├── controllers/             # HTTP request handlers
-│   ├── routes/                  # API routes
-│   ├── services/                # Business logic & AWS API calls
-│   ├── utils/                   # Helper functions
-│   ├── types/                   # TypeScript interfaces
-│   ├── index.ts                 # Entry point
-│   └── mcp-server.ts            # MCP implementation
-├── .env                         # Environment variables
-├── .gitignore                   # Git ignore rules
-└── package.json                 # Project config
+│   ├── aws/
+│   │   └── create-aws-config.ts   # Shared AWS SDK region + credentials
+│   ├── config/
+│   │   └── server-config.ts       # MCP server metadata
+│   ├── tools/                     # One file per MCP tool (handlers + schemas)
+│   ├── utils/
+│   │   └── env.ts                 # .env loading and getEnv()
+│   ├── types/
+│   │   └── codepipeline.ts        # API response interfaces
+│   ├── types.ts                   # CodePipelineManager (AWS client wrapper)
+│   ├── index.ts                   # Primary entry — stdio MCP server
+│   ├── services/                  # Legacy HTTP stack only
+│   ├── controllers/               # Legacy HTTP stack
+│   ├── routes/                    # Legacy HTTP stack
+│   └── mcp-server.ts              # Legacy Express experiment (not started by index.ts)
+├── .env.example
+├── dist/                          # Compiled output (npm run build)
+└── package.json
 ```
 
-**Pro Tip**: Don't worry about creating all files at once. We'll build them one by one as we progress.
+**Pro Tip**: New MCP tools go under `src/tools/`. Register each tool in `src/index.ts`.
 
-### How the Files Work Together
+### How the Files Work Together (current MCP path)
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌────────────┐     ┌─────────┐
-│   index.ts  │────▶│ mcp-server.ts│────▶│ controllers │────▶│services │────▶ AWS
-└─────────────┘     └──────────────┘     └────────────┘     └─────────┘
-      ▲                    ▲                   ▲                 ▲
-      │                    │                   │                 │
-      └─ Starts both ◀────┘                   │                 │
-         servers           Uses interfaces ────┘                 │
-                           from types/         Calls methods ───┘
+┌─────────────┐     ┌──────────────────┐     ┌─────────────────────┐     ┌──────────────┐
+│  index.ts   │────▶│  tools/*.ts      │────▶│ CodePipelineManager │────▶│ AWS CodePipeline │
+│ (stdio MCP) │     │  (per operation) │     │  (types.ts)         │     │  + CloudWatch*   │
+└─────────────┘     └──────────────────┘     └─────────────────────┘     └──────────────┘
+       │                      │                          │
+       │                      │                          └── uses create-aws-config.ts
+       └── StdioServerTransport (Cursor / Windsurf)
+
+* CloudWatch in get_pipeline_metrics.ts inherits global AWS.config from createAwsConfig().
 ```
+
+### Legacy HTTP stack (optional)
+
+`src/mcp-server.ts`, `routes/`, `controllers/`, and `services/codepipeline.service.ts` are from an earlier REST tutorial. `npm start` runs `dist/index.js` (stdio MCP only) and does **not** listen on `PORT`.
 
 ## 3. Building Your First MCP Server Components
 
@@ -161,46 +173,74 @@ export const serverConfig = {
 };
 ```
 
-### Step 3: Define Your AWS Service
+### Step 3: Centralize AWS configuration
 
-Create `src/services/aws-service.ts` to handle AWS SDK calls:
+Create `src/aws/create-aws-config.ts` so every AWS client shares the same region and credential logic:
 
 ```typescript
-// src/services/aws-service.ts
+// src/aws/create-aws-config.ts
 import AWS from 'aws-sdk';
 import { getEnv } from '../utils/env.js';
 
-export class AWSService {
-  private awsService: AWS.Service;
+export function createAwsConfig() {
+  const region = getEnv('AWS_REGION', 'us-west-2');
+  const accessKeyId = getEnv('AWS_ACCESS_KEY_ID');
+  const secretAccessKey = getEnv('AWS_SECRET_ACCESS_KEY');
+  const sessionToken = getEnv('AWS_SESSION_TOKEN');
 
-  constructor() {
-    const region = getEnv('AWS_REGION', 'us-west-2');
-    
-    // Initialize the specific AWS SDK service you need
-    // For example, for S3:
-    this.awsService = new AWS.S3({ region });
-    
-    console.log(`AWS service initialized with region: ${region}`);
+  const config: AWS.ConfigurationOptions = { region };
+
+  // Static keys only when both env vars are set; otherwise use default provider chain
+  if (accessKeyId && secretAccessKey) {
+    config.credentials = new AWS.Credentials({
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken ? { sessionToken } : {}),
+    });
   }
 
-  // Add methods for each AWS operation
-  // Example for S3 listBuckets:
-  async listItems() {
-    try {
-      // Replace this with your specific AWS service call
-      const result = await this.awsService.listBuckets().promise();
-      return result;
-    } catch (error) {
-      console.error('Error listing items:', error);
-      throw error;
-    }
+  AWS.config.update(config);
+  return { config, region };
+}
+```
+
+**Credential modes** (see also README):
+
+| Mode | What to set |
+|------|-------------|
+| Profile / SSO (recommended locally) | `AWS_PROFILE=my-profile` — omit access keys |
+| Static keys | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
+| Temporary session | Above + `AWS_SESSION_TOKEN` |
+| IAM role on AWS | Only `AWS_REGION` |
+
+The default chain reads `~/.aws/credentials`, SSO sessions after `aws sso login`, and instance/task roles automatically.
+
+### Step 3b: AWS client wrapper
+
+`src/types.ts` defines `CodePipelineManager`, which calls `createAwsConfig()` and exposes `getCodePipeline()` to all tools:
+
+```typescript
+import AWS from 'aws-sdk';
+import { createAwsConfig } from './aws/create-aws-config.js';
+
+export class CodePipelineManager {
+  private codepipeline: AWS.CodePipeline;
+
+  constructor() {
+    const { config, region } = createAwsConfig();
+    this.codepipeline = new AWS.CodePipeline(config);
+    console.log(`AWS CodePipeline manager initialized with region: ${region}`);
+  }
+
+  getCodePipeline(): AWS.CodePipeline {
+    return this.codepipeline;
   }
 }
 ```
 
-### Step 4: Create a Controller
+### Step 4 (optional): Legacy HTTP controller
 
-Create `src/controllers/aws-controller.ts` to handle HTTP requests:
+Skip this for the stdio MCP server. If you enable the legacy Express stack, create `src/controllers/aws-controller.ts` to handle HTTP requests:
 
 ```typescript
 // src/controllers/aws-controller.ts
@@ -227,9 +267,9 @@ export class AWSController {
 }
 ```
 
-### Step 5: Define Routes
+### Step 5 (optional): Legacy HTTP routes
 
-Create `src/routes/aws-routes.ts` to define API endpoints:
+Create `src/routes/aws-routes.ts` to define API endpoints (legacy stack only):
 
 ```typescript
 // src/routes/aws-routes.ts
@@ -281,159 +321,96 @@ interface ToolDefinition {
 
 ## 4. Creating the MCP Server Implementation
 
-### Step 6: Implement the MCP Server
+### Step 6: Implement tools (one file per operation)
 
-Create `src/mcp-server.ts` - this is the heart of your MCP implementation:
+Each tool lives in `src/tools/`, for example `list_pipelines.ts`:
 
 ```typescript
-// src/mcp-server.ts
-import { Server as BaseMCPServer } from "@modelcontextprotocol/sdk/server/index.js";
+// src/tools/list_pipelines.ts
+import { CodePipelineManager } from "../types.js";
 
-// Define your tools
-const toolDefinitions = [
-  {
-    name: "list_items",              // Tool name for Cascade to call
-    description: "List all items",    // Human-readable description
-    parameters: {
-      type: "object",
-      properties: {}
-    }
-  },
-  // Add more tool definitions here
-];
+export const listPipelinesSchema = {
+  name: "list_pipelines",
+  description: "List all CodePipeline pipelines",
+  inputSchema: { type: "object", properties: {} },
+} as const;
 
-// Create the MCP server class
-export class MCPServer extends BaseMCPServer {
-  constructor() {
-    super();
-    this.registerTools();
-  }
-
-  private registerTools() {
-    // Register each tool with its handler
-    this.router.register("list_items", this.handleTool.bind(this));
-    // Register more tools here
-  }
-
-  // Handle tool execution
-  async handleTool(tool) {
-    try {
-      // Call your API server
-      const response = await fetch(`http://localhost:3000/api/${tool.name.replace('_', '/')}`, {
-        method: "GET",
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const data = await response.json();
-      
-      // Return success response
-      return {
-        status: 'success',
-        result: data
-      };
-    } catch (error) {
-      console.error(`Error executing tool ${tool.name}:`, error);
-      
-      // Return error response
-      return {
-        status: 'error',
-        error: {
-          code: 'EXECUTION_ERROR',
-          message: `Failed to execute tool: ${error.message}`
-        }
-      };
-    }
-  }
-
-  // Return tool definitions to the MCP framework
-  getToolDefinitions() {
-    return toolDefinitions;
-  }
+export async function listPipelines(codePipelineManager: CodePipelineManager) {
+  const codepipeline = codePipelineManager.getCodePipeline();
+  const response = await codepipeline.listPipelines().promise();
+  // Return MCP content block...
 }
 ```
 
-### Step 7: Create the Main Entry Point
+Add the schema to `ListToolsRequestSchema` and branch on `name` inside `CallToolRequestSchema` in `src/index.ts`.
 
-Create `src/index.ts` to start both servers:
+### Step 7: Main entry point (stdio only)
+
+`src/index.ts` is the production entry point:
 
 ```typescript
-// src/index.ts
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadEnv, getEnv } from './utils/env.js';
-import express from 'express';
-import bodyParser from 'body-parser';
-import cors from 'cors';
-import { MCPServer } from './mcp-server.js';
-import awsRoutes from './routes/aws-routes.js';
+import { loadEnv } from './utils/env.js';
+import { createAwsConfig, logAwsConfig } from './aws/create-aws-config.js';
+import { CodePipelineManager } from "./types.js";
+// import tool schemas + handlers from ./tools/*
 
-// Load environment variables
 loadEnv();
 
-// Create and start the MCP server
-const server = new MCPServer();
+console.log('----- AWS CodePipeline MCP Server Configuration -----');
+logAwsConfig(createAwsConfig());
+console.log('Transport: stdio');
+console.log('-----------------------------------------------------');
+
+const codePipelineManager = new CodePipelineManager();
+const server = new Server({ name: "aws-codepipeline-mcp-server", version: "1.0.0" }, { capabilities: { tools: {} } });
+
+// Register ListTools / CallTool handlers that dispatch to src/tools/*
 const transport = new StdioServerTransport();
-server.connect(transport);
-
-// Create and start the HTTP server
-const app = express();
-const PORT = parseInt(getEnv('PORT', '3000'));
-
-// Configure middleware
-app.use(cors());
-app.use(bodyParser.json());
-
-// Configure routes
-app.use('/api', awsRoutes);
-
-// Health check route
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
-
-// Start the HTTP server
-app.listen(PORT, () => {
-  console.log(`HTTP server listening on port ${PORT}`);
-});
-
-console.log("MCP Server started successfully");
+await server.connect(transport);
 ```
 
-### How the Processing Flow Works (Made Simple)
+There is no HTTP hop: tools call AWS directly through `CodePipelineManager`.
+
+### How the processing flow works
 
 ```
-1. User: "List my AWS items"
+1. User: "List my CodePipeline pipelines"
    ↓
-2. Cascade understands and calls your tool "list_items"
+2. IDE assistant calls MCP tool "list_pipelines"
    ↓
-3. MCP Server receives the request through StdioServerTransport
+3. index.ts receives CallTool over StdioServerTransport
    ↓
-4. MCPServer.handleTool() makes an HTTP request to your Express server
+4. Handler in src/tools/list_pipelines.ts runs
    ↓
-5. Express routes the request to your controller
+5. CodePipelineManager → AWS CodePipeline API
    ↓
-6. Controller calls your service
-   ↓
-7. Service makes AWS API call
-   ↓
-8. Results travel back up the chain to the user
+6. JSON result returned as MCP tool content
 ```
 
-**Key Point**: Your MCP server actually has TWO servers running:
-1. The MCP protocol server (communicates with Cascade)
-2. An HTTP server (handles API requests from the MCP server)
+**Key point**: `npm start` runs **one** process — MCP over stdio. Do not assume `PORT` or Express unless you explicitly wire up `src/mcp-server.ts`.
 
 ## 5. Final Steps and Troubleshooting
 
-### Step 8: Configure Environment Variables
+### Step 8: Configure environment variables
 
-Create a `.env` file in your project root:
+Copy `.env.example` to `.env`. Recommended for local development:
 
 ```
-PORT=3000
 AWS_REGION=us-west-2
-AWS_ACCESS_KEY_ID=your_access_key_here
-AWS_SECRET_ACCESS_KEY=your_secret_key_here
+AWS_PROFILE=your-aws-profile
 ```
+
+Optional static keys (omit both to use the default credential chain):
+
+```
+# AWS_ACCESS_KEY_ID=...
+# AWS_SECRET_ACCESS_KEY=...
+# AWS_SESSION_TOKEN=...   # temporary creds only
+```
+
+`PORT` is only relevant for the legacy HTTP server in `src/mcp-server.ts`, not for `npm start` / stdio MCP.
 
 ### Step 9: Create a .gitignore File
 
@@ -472,21 +449,22 @@ Update your Windsurf MCP configuration (typically in `~/.codeium/windsurf/mcp_co
       ],
       "env": {
         "AWS_REGION": "your-region",
-        "AWS_ACCESS_KEY_ID": "your-access-key",
-        "AWS_SECRET_ACCESS_KEY": "your-secret-key"
+        "AWS_PROFILE": "your-aws-profile"
       }
     }
   }
 }
 ```
 
-### Adding New AWS Operations (Simple Steps)
+### Adding a new CodePipeline operation
 
-1. **Add a service method**: Create a new method in your service class
-2. **Add a controller method**: Create a handler in your controller
-3. **Add a route**: Connect the controller to an API endpoint
-4. **Add a tool definition**: Tell Cascade about your new capability
-5. **Register the tool handler**: Connect the tool to your implementation
+1. **Create** `src/tools/your_tool.ts` with `yourToolSchema` and `async function yourTool(codePipelineManager, input)`
+2. **Import** schema and handler in `src/index.ts`
+3. **Register** the schema in the `ListTools` handler array
+4. **Add** a `case "your_tool":` branch in the `CallTool` handler
+5. **Rebuild**: `npm run build`, then restart the MCP client
+
+For the legacy HTTP stack only: also add service + controller + route methods (not required for stdio MCP).
 
 ### Common Issues and Solutions
 
@@ -498,23 +476,26 @@ Update your Windsurf MCP configuration (typically in `~/.codeium/windsurf/mcp_co
 - Make sure you're using `.js` extensions in imports (ES modules requirement)  
 - Check that the module is installed in package.json
 
-#### 2. AWS SDK errors
+#### 2. AWS SDK / credential errors
 
-**Problem**: AWS operations fail with authentication errors
-
-**Solution**:
-- Verify your AWS credentials in the .env file
-- Check that the region is correct
-- Ensure proper IAM permissions for the AWS operations
-
-#### 3. MCP Server not communicating with Windsurf
-
-**Problem**: Cascade can't access your tools
+**Problem**: `ExpiredToken`, `UnrecognizedClientException`, or `AccessDenied`
 
 **Solution**:
-- Check the path to your index.js file in mcp_config.json
-- Verify that you're returning proper tool definitions
-- Make sure both your Express and MCP servers are running
+- **Profile / SSO**: set `AWS_PROFILE` and run `aws sso login --profile YOUR_PROFILE` if using SSO
+- **Static keys**: verify `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temp creds)
+- Check startup logs: `AWS credentials: default provider chain` vs `static keys from environment variables`
+- Confirm `AWS_REGION` matches where pipelines exist
+- Ensure IAM permissions for CodePipeline (and CloudWatch for `get_pipeline_metrics`)
+
+#### 3. MCP server not detected by the IDE
+
+**Problem**: Assistant can't access tools
+
+**Solution**:
+- Check the path to `dist/index.js` in MCP config (run `npm run build` first)
+- Verify tool schemas are registered in `ListTools` and handlers in `CallTool`
+- Restart the IDE after config changes
+- Stdio MCP does not use `PORT` — a "connection refused" on port 3000 usually means something else is wrong, not this server
 
 #### 4. "TypeError: Cannot read property of undefined"
 

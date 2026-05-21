@@ -2,6 +2,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadEnv, getEnv } from './utils/env.js';
+import { createAwsConfig, logAwsConfig } from './aws/create-aws-config.js';
 import { CodePipelineManager } from "./types.js";
 import { serverConfig } from "./config/server-config.js";
 
@@ -79,15 +80,12 @@ import {
 // Load environment variables
 loadEnv();
 
-// Log configuration for debugging
 console.log('----- AWS CodePipeline MCP Server Configuration -----');
-console.log('PORT:', getEnv('PORT', '3000'));
-console.log('AWS_REGION:', getEnv('AWS_REGION'));
-console.log('AWS_ACCESS_KEY_ID:', getEnv('AWS_ACCESS_KEY_ID') ? '***' : 'undefined');
-console.log('AWS_SECRET_ACCESS_KEY:', getEnv('AWS_SECRET_ACCESS_KEY') ? '***' : 'undefined');
+const awsConfigResult = createAwsConfig();
+logAwsConfig(awsConfigResult);
+console.log('Transport: stdio (PORT is only used by the legacy HTTP server)');
 console.log('-----------------------------------------------------');
 
-// Initialize CodePipeline manager
 const codePipelineManager = new CodePipelineManager();
 
 // Create server instance

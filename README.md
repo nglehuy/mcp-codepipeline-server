@@ -22,7 +22,7 @@ This is a Model Context Protocol (MCP) server that integrates with AWS CodePipel
 
 - Node.js (v14 or later)
 - AWS account with CodePipeline access
-- AWS credentials with permissions for CodePipeline, CloudWatch, and IAM (for tagging)
+- AWS credentials with permissions for CodePipeline and CloudWatch (read metrics)
 - Windsurf IDE with Cascade AI assistant
 
 ## Installation
@@ -46,16 +46,103 @@ npm install
 cp .env.example .env
 ```
 
-4. Update the `.env` file with your AWS credentials and configuration:
+4. Update the `.env` file with your AWS configuration (see `.env.example`):
 
 ```
 AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=your_access_key_id
-AWS_SECRET_ACCESS_KEY=your_secret_access_key
-PORT=3000
+AWS_PROFILE=your-aws-profile
 ```
 
 > **Note**: For security, never commit your `.env` file to version control.
+
+### AWS authentication
+
+You do **not** need long-lived access keys in `.env`. Pick one approach:
+
+| Approach | Configuration |
+|----------|----------------|
+| **AWS profile** (recommended for local dev) | `AWS_PROFILE=my-profile` — uses `~/.aws/credentials` / `~/.aws/config` |
+| **AWS SSO** | `aws configure sso` then `aws sso login --profile my-sso` and set `AWS_PROFILE=my-sso` |
+| **Static keys** | Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary creds) |
+| **IAM role** | Run on EC2/ECS/Lambda/EKS with an attached role; set only `AWS_REGION` |
+
+If access keys are omitted, the AWS SDK uses its [default credential provider chain](https://docs.aws.amazon.com/sdk-for-javascript/v2/developer-guide/setting-credentials.html).
+
+### Creating an AWS profile
+
+A **profile** is a named entry in `~/.aws/credentials` and `~/.aws/config`. Set `AWS_PROFILE` to that name in `.env` or MCP config.
+
+#### Option A: Access keys (IAM user)
+
+Requires [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).
+
+```bash
+aws configure --profile codepipeline-dev
+```
+
+You will be prompted for:
+
+| Prompt | Example |
+|--------|---------|
+| AWS Access Key ID | `AKIA...` |
+| AWS Secret Access Key | (secret) |
+| Default region name | `us-east-1` |
+| Default output format | `json` |
+
+Then in `.env`:
+
+```
+AWS_REGION=us-east-1
+AWS_PROFILE=codepipeline-dev
+```
+
+#### Option B: AWS SSO (IAM Identity Center)
+
+```bash
+aws configure sso --profile codepipeline-sso
+```
+
+Follow the prompts (SSO start URL, SSO region, account, role). Then log in before starting the MCP server:
+
+```bash
+aws sso login --profile codepipeline-sso
+```
+
+In `.env`:
+
+```
+AWS_REGION=us-east-1
+AWS_PROFILE=codepipeline-sso
+```
+
+SSO sessions expire; run `aws sso login` again when you see credential errors.
+
+#### Verify the profile
+
+```bash
+aws sts get-caller-identity --profile codepipeline-dev
+aws codepipeline list-pipelines --region us-east-1 --profile codepipeline-dev
+```
+
+If both commands succeed, the MCP server can use the same `AWS_PROFILE` and `AWS_REGION`.
+
+#### Files created (reference)
+
+`~/.aws/credentials`:
+
+```ini
+[codepipeline-dev]
+aws_access_key_id = AKIA...
+aws_secret_access_key = ...
+```
+
+`~/.aws/config`:
+
+```ini
+[profile codepipeline-dev]
+region = us-east-1
+output = json
+```
 
 ## Usage
 
@@ -102,8 +189,7 @@ npm start
       ],
       "env": {
         "AWS_REGION": "us-east-1",
-        "AWS_ACCESS_KEY_ID": "your_access_key_id",
-        "AWS_SECRET_ACCESS_KEY": "your_secret_access_key"
+        "AWS_PROFILE": "your-aws-profile"
       }
     }
   }
@@ -169,8 +255,10 @@ Cascade will translate these requests into the appropriate MCP tool calls.
    - Check if the port is blocked by a firewall
 
 2. **AWS credential errors**:
-   - Verify your AWS credentials in the `.env` file
-   - Ensure your IAM user has the necessary permissions
+   - For profiles/SSO: run `aws sso login --profile YOUR_PROFILE` if needed, then set `AWS_PROFILE`
+   - For static keys: verify `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env` or MCP `env`
+   - Ensure the principal has CodePipeline (and CloudWatch for metrics) permissions
+   - Check server startup logs for `AWS credentials: default provider chain` vs `static keys`
 
 3. **Windsurf not detecting the MCP server**:
    - Check the `mcp_config.json` file format

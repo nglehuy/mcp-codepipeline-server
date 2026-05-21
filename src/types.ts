@@ -1,31 +1,13 @@
 import AWS from 'aws-sdk';
-import { getEnv } from './utils/env.js';
+import { createAwsConfig } from './aws/create-aws-config.js';
 
 export class CodePipelineManager {
   private codepipeline: AWS.CodePipeline;
 
   constructor() {
-    // Get AWS configuration from environment variables
-    const region = getEnv('AWS_REGION', 'us-west-2'); // Default to us-west-2 if not provided
-    const accessKeyId = getEnv('AWS_ACCESS_KEY_ID');
-    const secretAccessKey = getEnv('AWS_SECRET_ACCESS_KEY');
-    
-    // Configure AWS SDK
-    const awsConfig: AWS.ConfigurationOptions = { region };
-    
-    // Add credentials if provided
-    if (accessKeyId && secretAccessKey) {
-      awsConfig.credentials = new AWS.Credentials({
-        accessKeyId,
-        secretAccessKey
-      });
-    }
-    
-    // Update AWS SDK configuration
-    AWS.config.update(awsConfig);
-    
+    const { config, region } = createAwsConfig();
     console.log(`AWS CodePipeline manager initialized with region: ${region}`);
-    this.codepipeline = new AWS.CodePipeline(awsConfig);
+    this.codepipeline = new AWS.CodePipeline(config);
   }
 
   getCodePipeline(): AWS.CodePipeline {
